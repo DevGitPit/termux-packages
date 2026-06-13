@@ -23,6 +23,7 @@ TERMUX_PKG_SERVICE_SCRIPT=(
 	"exec ${TERMUX_PREFIX}/bin/jellyfin 2>&1"
 )
 TERMUX_PKG_EXCLUDED_ARCHES="arm"
+TERMUX_DOTNET_VERSION=9.0
 TERMUX_PKG_RM_AFTER_INSTALL="
 opt/jellyfin/include
 opt/jellyfin/lib/pkgconfig
@@ -34,7 +35,7 @@ termux_step_post_get_source() {
 	# if [[ -f "debian/patches/series" ]]; then
 	# quilt push -a
 	# fi
-	local _patch;
+	local _patch
 	for _patch in $(<debian/patches/series); do
 		git apply --whitespace=nowarn "debian/patches/${_patch}"
 	done
@@ -42,11 +43,21 @@ termux_step_post_get_source() {
 }
 
 termux_step_pre_configure() {
-	TERMUX_DOTNET_VERSION=9.0
-	termux_setup_dotnet; termux_setup_nodejs
+	termux_setup_dotnet
+	termux_setup_nodejs
 
 	pushd jellyfin-web-"${TERMUX_PKG_VERSION[0]}"
-	npm install
+
+	git init
+	git config user.email "termux@example.com"
+	git config user.name "termux"
+	git add .
+	git commit -m "dummy"
+	git tag "v${TERMUX_PKG_VERSION[0]}"
+
+	export NODE_OPTIONS="--max-old-space-size=4096"
+
+	npm_config_engine_strict=false npm install
 
 	# git warning in build log here is normal, the commit hash is not needed
 	npm run build:production
@@ -67,9 +78,9 @@ termux_step_pre_configure() {
 		# Specify --disable-asm to prevent text relocations on i686,
 		# see https://trac.ffmpeg.org/ticket/4928
 		_EXTRA_CONFIGURE_FLAGS="--disable-asm"
-#	elif [ "$TERMUX_ARCH" = "arm" ]; then
-#		_ARCH="armeabi-v7a"
-#		_EXTRA_CONFIGURE_FLAGS="--enable-neon"
+		#	elif [ "$TERMUX_ARCH" = "arm" ]; then
+		#		_ARCH="armeabi-v7a"
+		#		_EXTRA_CONFIGURE_FLAGS="--enable-neon"
 	elif [ "$TERMUX_ARCH" = "x86_64" ]; then
 		_ARCH="x86_64"
 	elif [ "$TERMUX_ARCH" = "aarch64" ]; then
@@ -84,51 +95,67 @@ termux_step_pre_configure() {
 	# generated using ffmpeg-configureopts.sh
 	# if names of variables used in this command are changed, please update variable names in ffmpeg-configureopts.sh as well
 	./configure --prefix="${_FFMPEG_PREFIX}" \
-	--arch="${_ARCH}" \
-	--as="$AS" \
-	--cc="$CC" \
-	--cxx="$CXX" \
-	--nm="$NM" \
-	--ar="$AR" \
-	--ranlib=llvm-ranlib \
-	--pkg-config="$PKG_CONFIG" \
-	--strip="$STRIP" \
-	--enable-cross-compile \
-	--extra-version="Jellyfin" \
-	--extra-cflags="" \
-	--extra-cxxflags="" \
-	--extra-ldflags="" \
-	--extra-ldexeflags="-pie" \
-	--extra-libs="-ldl -landroid-glob" \
-	--target-os=android \
-	--disable-static \
-	--enable-shared \
-	--enable-gpl --enable-version3 --disable-ffplay --disable-debug --disable-doc --disable-sdl2 --disable-libxcb --disable-xlib --enable-lto=auto --enable-iconv --enable-zlib --enable-libfreetype --enable-libfribidi --enable-gmp --enable-libxml2 --enable-openssl --enable-lzma --enable-fontconfig --enable-libharfbuzz --enable-libvorbis --enable-opencl --enable-chromaprint --enable-libdav1d --enable-libass --enable-libbluray --enable-libmp3lame --enable-libopus --enable-libtheora --enable-libvpx --enable-libwebp --enable-libopenmpt --enable-libsrt --enable-libsvtav1 --enable-libx264 --enable-libx265 --enable-libzimg \
-	${_EXTRA_CONFIGURE_FLAGS} \
-	--disable-vulkan
+		--arch="${_ARCH}" \
+		--as="$AS" \
+		--cc="$CC" \
+		--cxx="$CXX" \
+		--nm="$NM" \
+		--ar="$AR" \
+		--ranlib=llvm-ranlib \
+		--pkg-config="$PKG_CONFIG" \
+		--strip="$STRIP" \
+		--enable-cross-compile \
+		--extra-version="Jellyfin" \
+		--extra-cflags="" \
+		--extra-cxxflags="" \
+		--extra-ldflags="" \
+		--extra-ldexeflags="-pie" \
+		--extra-libs="-ldl -landroid-glob" \
+		--target-os=android \
+		--disable-static \
+		--enable-shared \
+		--enable-gpl --enable-version3 --disable-ffplay --disable-debug --disable-doc --disable-sdl2 --disable-libxcb --disable-xlib --enable-lto=auto --enable-iconv --enable-zlib --enable-libfreetype --enable-libfribidi --enable-gmp --enable-libxml2 --enable-openssl --enable-lzma --enable-fontconfig --enable-libharfbuzz --enable-libvorbis --enable-opencl --enable-chromaprint --enable-libdav1d --enable-libass --enable-libbluray --enable-libmp3lame --enable-libopus --enable-libtheora --enable-libvpx --enable-libwebp --enable-libopenmpt --enable-libsrt --enable-libsvtav1 --enable-libx264 --enable-libx265 --enable-libzimg \
+		${_EXTRA_CONFIGURE_FLAGS} \
+		--disable-vulkan
 
 	make -j"$TERMUX_PKG_MAKE_PROCESSES"
-	make install
+	make install DESTDIR="${TERMUX_PKG_BUILDDIR}/jellyfin-ffmpeg-dest"
 	popd
 }
 
 termux_step_make() {
-	dotnet publish "$TERMUX_PKG_SRCDIR"/Jellyfin.Server --configuration Release --runtime "$DOTNET_TARGET_NAME" --output "$TERMUX_PKG_BUILDDIR"/build --no-self-contained -p:DebugType=None
+	dotnet publish "$TERMUX_PKG_SRCDIR"/Jellyfin.Server --configuration Release --runtime "$DOTNET_TARGET_NAME" --output "$TERMUX_PKG_BUILDDIR"/jellyfin-server-dist --no-self-contained -p:DebugType=None
 	dotnet build-server shutdown
 }
 
 termux_step_make_install() {
 	# we provide bionic builds of these in the repo
-	rm -f "${TERMUX_PKG_BUILDDIR}/build/"{libe_sqlite3,libSkiaSharp,libHarfBuzzSharp}.so*
-	chmod 0700 "${TERMUX_PKG_BUILDDIR}/build"
+	rm -f "${TERMUX_PKG_BUILDDIR}/jellyfin-server-dist/"{libe_sqlite3,libSkiaSharp,libHarfBuzzSharp}.so*
 
-	mv "${TERMUX_PKG_BUILDDIR}/jellyfin-web" "${TERMUX_PKG_BUILDDIR}/build"
 	# XML cruft generated during build used to provide documentation for functions and objects
-	find "${TERMUX_PKG_BUILDDIR}/build" -name '*.xml' -type f -exec rm '{}' +
-	find "${TERMUX_PKG_BUILDDIR}/build" ! \( -name 'jellyfin' -o -type d \) -exec chmod 0600 '{}' \;
-	find "${TERMUX_PKG_BUILDDIR}/build" \( -name 'jellyfin' -o -type d \) -exec chmod 0700 '{}' \;
-	mv "${TERMUX_PKG_BUILDDIR}/build" "${TERMUX_PREFIX}/lib/jellyfin"
-	ln -s "${TERMUX_PREFIX}/lib/jellyfin/jellyfin" "${TERMUX_PREFIX}/bin/jellyfin"
+	find "${TERMUX_PKG_BUILDDIR}/jellyfin-server-dist" -name '*.xml' -type f -exec rm '{}' +
+
+	# Set permissions
+	chmod 0700 "${TERMUX_PKG_BUILDDIR}/jellyfin-server-dist"
+	find "${TERMUX_PKG_BUILDDIR}/jellyfin-server-dist" ! \( -name 'jellyfin' -o -type d \) -exec chmod 0600 '{}' \;
+	find "${TERMUX_PKG_BUILDDIR}/jellyfin-server-dist" \( -name 'jellyfin' -o -type d \) -exec chmod 0700 '{}' \;
+
+	# Install server files
+	mkdir -p "${TERMUX_PREFIX}/lib/jellyfin"
+	cp -a "${TERMUX_PKG_BUILDDIR}/jellyfin-server-dist/." "${TERMUX_PREFIX}/lib/jellyfin/"
+
+	# Install web files
+	if [ -d "${TERMUX_PKG_BUILDDIR}/jellyfin-web" ]; then
+		cp -a "${TERMUX_PKG_BUILDDIR}/jellyfin-web" "${TERMUX_PREFIX}/lib/jellyfin/"
+	fi
+
+	# Create symlink
+	ln -sf "${TERMUX_PREFIX}/lib/jellyfin/jellyfin" "${TERMUX_PREFIX}/bin/jellyfin"
+
+	# Move the ffmpeg files (from the temporary DESTDIR to the real prefix)
+	if [ -d "${TERMUX_PKG_BUILDDIR}/jellyfin-ffmpeg-dest/${TERMUX_PREFIX}" ]; then
+		cp -a "${TERMUX_PKG_BUILDDIR}/jellyfin-ffmpeg-dest/${TERMUX_PREFIX}/." "${TERMUX_PREFIX}/"
+	fi
 }
 # References
 # - Jellyfin-FFMPEG
