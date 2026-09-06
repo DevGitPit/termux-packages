@@ -13,20 +13,20 @@
  }
 --- a/src/NzbDrone.Common/Disk/IDiskProvider.cs
 +++ b/src/NzbDrone.Common/Disk/IDiskProvider.cs
-@@ -34,6 +34,8 @@
-         void MoveFolder(string source, string destination);
+@@ -35,6 +35,8 @@
          bool TryRenameFile(string source, string destination);
          bool TryCreateHardLink(string source, string destination);
 +        bool TryCreateSymbolicLink(string source, string destination);
 +        bool IsSymbolicLink(string path);
+         bool TryCreateRefLink(string source, string destination);
          void DeleteFolder(string path, bool recursive);
          string ReadAllText(string filePath);
          void WriteAllText(string filename, string contents);
 --- a/src/NzbDrone.Common/Disk/DiskProviderBase.cs
 +++ b/src/NzbDrone.Common/Disk/DiskProviderBase.cs
-@@ -303,6 +303,32 @@
- 
-         public abstract bool TryCreateHardLink(string source, string destination);
+@@ -312,6 +312,32 @@
+             return false;
+         }
  
 +        public virtual bool TryCreateSymbolicLink(string source, string destination)
 +        {
@@ -154,9 +154,7 @@
  
 --- a/src/NzbDrone.Mono/Disk/DiskProvider.cs
 +++ b/src/NzbDrone.Mono/Disk/DiskProvider.cs
-@@ -462,6 +462,32 @@
-                 _logger.Debug(ex, "Hardlink '{0}' to '{1}' failed.", source, destination);
-                 return false;
+@@ -459,6 +459,32 @@
              }
          }
  
@@ -188,3 +186,4 @@
 +
          private uint GetUserId(string user)
          {
+             if (user.IsNullOrWhiteSpace())
