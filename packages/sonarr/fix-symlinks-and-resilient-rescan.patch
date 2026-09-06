@@ -1,0 +1,190 @@
+--- a/src/NzbDrone.Common/Disk/TransferMode.cs
++++ b/src/NzbDrone.Common/Disk/TransferMode.cs
+@@ -10,7 +10,9 @@
+         Move = 1,
+         Copy = 2,
+         HardLink = 4,
++        SymbolicLink = 8,
+ 
+-        HardLinkOrCopy = Copy | HardLink
++        HardLinkOrCopy = Copy | HardLink,
++        SymbolicLinkOrCopy = Copy | SymbolicLink
+     }
+ }
+--- a/src/NzbDrone.Common/Disk/IDiskProvider.cs
++++ b/src/NzbDrone.Common/Disk/IDiskProvider.cs
+@@ -34,6 +34,8 @@
+         void MoveFolder(string source, string destination);
+         bool TryRenameFile(string source, string destination);
+         bool TryCreateHardLink(string source, string destination);
++        bool TryCreateSymbolicLink(string source, string destination);
++        bool IsSymbolicLink(string path);
+         void DeleteFolder(string path, bool recursive);
+         string ReadAllText(string filePath);
+         void WriteAllText(string filename, string contents);
+--- a/src/NzbDrone.Common/Disk/DiskProviderBase.cs
++++ b/src/NzbDrone.Common/Disk/DiskProviderBase.cs
+@@ -303,6 +303,32 @@
+ 
+         public abstract bool TryCreateHardLink(string source, string destination);
+ 
++        public virtual bool TryCreateSymbolicLink(string source, string destination)
++        {
++            try
++            {
++                File.CreateSymbolicLink(destination, source);
++                return true;
++            }
++            catch (Exception ex)
++            {
++                Logger.Debug(ex, "Symbolic link '{0}' to '{1}' failed.", source, destination);
++                return false;
++            }
++        }
++
++        public virtual bool IsSymbolicLink(string path)
++        {
++            try
++            {
++                return new FileInfo(path).Attributes.HasFlag(FileAttributes.ReparsePoint);
++            }
++            catch
++            {
++                return false;
++            }
++        }
++
+         public void DeleteFolder(string path, bool recursive)
+         {
+             Ensure.That(path, () => path).IsValidPath(PathValidationType.CurrentOs);
+--- a/src/NzbDrone.Common/Disk/DiskTransferService.cs
++++ b/src/NzbDrone.Common/Disk/DiskTransferService.cs
+@@ -272,7 +272,7 @@
+ 
+             if (sourcePath.PathEquals(targetPath, StringComparison.InvariantCultureIgnoreCase))
+             {
+-                if (mode.HasFlag(TransferMode.HardLink) || mode.HasFlag(TransferMode.Copy))
++                if (mode.HasFlag(TransferMode.HardLink) || mode.HasFlag(TransferMode.Copy) || mode.HasFlag(TransferMode.SymbolicLink))
+                 {
+                     throw new IOException(string.Format("Source and destination can't be the same {0}", sourcePath));
+                 }
+@@ -324,12 +324,34 @@
+                     return TransferMode.HardLink;
+                 }
+ 
+-                if (!mode.HasFlag(TransferMode.Copy))
++                if (mode.HasFlag(TransferMode.Copy))
++                {
++                    var createdSymbolicLink = _diskProvider.TryCreateSymbolicLink(sourcePath, targetPath);
++                    if (createdSymbolicLink)
++                    {
++                        return TransferMode.SymbolicLink;
++                    }
++                }
++                else
+                 {
+                     throw new IOException("Hardlinking from '" + sourcePath + "' to '" + targetPath + "' failed.");
+                 }
+             }
+ 
++            if (mode.HasFlag(TransferMode.SymbolicLink))
++            {
++                var createdSymbolicLink = _diskProvider.TryCreateSymbolicLink(sourcePath, targetPath);
++                if (createdSymbolicLink)
++                {
++                    return TransferMode.SymbolicLink;
++                }
++
++                if (!mode.HasFlag(TransferMode.Copy))
++                {
++                    throw new IOException("Symbolic linking from '" + sourcePath + "' to '" + targetPath + "' failed.");
++                }
++            }
++
+             // Adjust the transfer mode depending on the filesystems
+             var sourceMount = _diskProvider.GetMount(sourcePath);
+             var targetMount = _diskProvider.GetMount(targetPath);
+--- a/src/NzbDrone.Core/MediaFiles/DiskScanService.cs
++++ b/src/NzbDrone.Core/MediaFiles/DiskScanService.cs
+@@ -150,18 +150,38 @@
+             foreach (var file in seriesFiles)
+             {
+                 var path = Path.Combine(series.Path, file.RelativePath);
+-                var fileSize = _diskProvider.GetFileSize(path);
+ 
+-                if (file.Size == fileSize)
++                try
+                 {
+-                    continue;
+-                }
++                    if (!_diskProvider.FileExists(path))
++                    {
++                        if (_diskProvider.IsSymbolicLink(path))
++                        {
++                            _logger.Info("Removing dangling symlink during scan: {0}", path);
++                            _diskProvider.DeleteFile(path);
++                        }
++
++                        _mediaFileService.Delete(file, DeleteMediaFileReason.MissingFromDisk);
++                        continue;
++                    }
++
++                    var fileSize = _diskProvider.GetFileSize(path);
++
++                    if (file.Size == fileSize)
++                    {
++                        continue;
++                    }
+ 
+-                file.Size = fileSize;
++                    file.Size = fileSize;
+ 
+-                if (!_updateMediaInfoService.Update(file, series))
++                    if (!_updateMediaInfoService.Update(file, series))
++                    {
++                        filesToUpdate.Add(file);
++                    }
++                }
++                catch (Exception ex)
+                 {
+-                    filesToUpdate.Add(file);
++                    _logger.Error(ex, "Failed to process media file '{0}' during series scan", path);
+                 }
+             }
+ 
+--- a/src/NzbDrone.Mono/Disk/DiskProvider.cs
++++ b/src/NzbDrone.Mono/Disk/DiskProvider.cs
+@@ -462,6 +462,32 @@
+                 _logger.Debug(ex, "Hardlink '{0}' to '{1}' failed.", source, destination);
+                 return false;
+             }
+         }
+ 
++        public override bool TryCreateSymbolicLink(string source, string destination)
++        {
++            try
++            {
++                File.CreateSymbolicLink(destination, source);
++                return true;
++            }
++            catch (Exception ex)
++            {
++                _logger.Debug(ex, "Symbolic link '{0}' to '{1}' failed.", source, destination);
++                return false;
++            }
++        }
++
++        public override bool IsSymbolicLink(string path)
++        {
++            try
++            {
++                return UnixFileSystemInfo.GetFileSystemEntry(path).IsSymbolicLink;
++            }
++            catch
++            {
++                return base.IsSymbolicLink(path);
++            }
++        }
++
+         private uint GetUserId(string user)
+         {
