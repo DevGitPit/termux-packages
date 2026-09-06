@@ -154,9 +154,7 @@
  
 --- a/src/NzbDrone.Mono/Disk/DiskProvider.cs
 +++ b/src/NzbDrone.Mono/Disk/DiskProvider.cs
-@@ -462,6 +462,32 @@
-                 _logger.Debug(ex, "Hardlink '{0}' to '{1}' failed.", source, destination);
-                 return false;
+@@ -459,6 +459,32 @@
              }
          }
  
@@ -188,3 +186,4 @@
 +
          private uint GetUserId(string user)
          {
+             if (user.IsNullOrWhiteSpace())
